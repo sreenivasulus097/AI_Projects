@@ -22,6 +22,7 @@ jobs:
         run: |
           git fetch origin ${{ github.base_ref }}
           git diff origin/${{ github.base_ref }}...HEAD > pr.diff
+          echo "Diff size: $(wc -l < pr.diff) lines"
           
       - name: Review with Claude
         env:
@@ -33,34 +34,80 @@ jobs:
           # Read the diff
           DIFF=$(cat pr.diff)
           
-          # Create a JSON payload for Claude
-          PROMPT="Please review this pull request and provide constructive feedback. Focus on:
-          - Code quality and best practices
-          - Potential bugs or issues
-          - Security concerns
-          - Performance improvements
-          - Suggestions for better readability
+          # Exit if diff is empty
+          if [ -z "$DIFF" ]; then
+            echo "No changes detected in PR"
+            exit 0
+          fi
           
-          Here's the diff:
-          $DIFF"
+          # Create prompt for Claude with specific instructions
+          PROMPT="You are an expert code reviewer. Carefully analyze this pull request and identify ALL issues, including:
+
+          **Critical Issues to Check:**
+          1. Wrong imports (importing from non-existent modules, incorrect package names, unused imports)
+          2. Syntax errors (missing brackets, incorrect indentation, malformed code)
+          3. Logic errors (incorrect conditions, off-by-one errors, null pointer risks)
+          4. Security vulnerabilities (SQL injection, XSS, hardcoded secrets, insecure dependencies)
+          5. Performance issues (inefficient loops, memory leaks, unnecessary operations)
+          6. Code quality (duplicate code, poor naming, missing error handling)
+          7. Best practices violations (not following language conventions, anti-patterns)
+          8. Type errors (incorrect type usage, missing type annotations where needed)
+          9. Potential runtime errors (division by zero, index out of bounds, undefined variables)
+          10. Breaking changes (API changes that could break existing code)
+
+          **Review Format:**
+          - Start with a severity rating: 🔴 CRITICAL | 🟡 WARNING | 🟢 MINOR
+          - List specific issues with line numbers where possible
+          - Explain WHY each issue is a problem
+          - Suggest concrete fixes
+          - If NO issues found, explicitly state: 'No issues detected - code looks good ✅'
+
+          **Be thorough and critical. Do not approve code with defects.**
+
+          Here is the git diff to review:
+          
+          \`\`\`diff
+          $DIFF
+          \`\`\`"
+          
+          # Escape the prompt for JSON
+          PROMPT_ESCAPED=$(echo "$PROMPT" | jq -Rs .)
           
           # Call Claude API
-          REVIEW=$(curl -s https://api.anthropic.com/v1/messages \
+          echo "Calling Claude API for review..."
+          RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
             -H "content-type: application/json" \
             -H "x-api-key: $ANTHROPIC_API_KEY" \
             -H "anthropic-version: 2023-06-01" \
             -d '{
               "model": "claude-sonnet-4-20250514",
-              "max_tokens": 4096,
+              "max_tokens": 8192,
+              "temperature": 0.3,
               "messages": [{
                 "role": "user",
-                "content": "'"${PROMPT//\"/\\\"}"'"
+                "content": '"$PROMPT_ESCAPED"'
               }]
-            }' | jq -r '.content[0].text')
+            }')
+          
+          # Extract the review text
+          REVIEW=$(echo "$RESPONSE" | jq -r '.content[0].text // "Error: Could not get review from Claude"')
+          
+          # Check if we got an error
+          if echo "$RESPONSE" | jq -e '.error' > /dev/null; then
+            ERROR_MSG=$(echo "$RESPONSE" | jq -r '.error.message')
+            echo "Error from Claude API: $ERROR_MSG"
+            REVIEW="⚠️ **Error calling Claude API:** $ERROR_MSG"
+          fi
+          
+          # Escape the review for JSON
+          REVIEW_ESCAPED=$(echo "$REVIEW" | jq -Rs .)
           
           # Post review to PR
+          echo "Posting review to PR..."
           curl -s -X POST \
             -H "Authorization: token $GH_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" \
-            -d "{\"body\":\"## 🤖 Claude AI Review\n\n$REVIEW\"}"
+            -d '{"body":"## 🤖 Claude AI Code Review\n\n'"$REVIEW"'"}'
+          
+          echo "Review posted successfully!"
