@@ -12,102 +12,95 @@ jobs:
       contents: read
     
     steps:
-      - name: Checkout code
+      - name: Checkout PR code
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
       
-      - name: Get PR diff
-        id: get-diff
+      - name: Get changed files
+        id: get-files
         run: |
           git fetch origin ${{ github.base_ref }}
-          git diff origin/${{ github.base_ref }}...HEAD > pr.diff
-          echo "Diff size: $(wc -l < pr.diff) lines"
+          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -E '\.(py|js|ts|java|go|rb|php|cpp|c|h)$' || echo "")
+          
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No code files changed"
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "has_changes=true" >> $GITHUB_OUTPUT
+          
+          echo "Changed Files Review" > review_content.txt
+          echo "" >> review_content.txt
+          
+          for file in $CHANGED_FILES; do
+            if [ -f "$file" ]; then
+              echo "File: $file" >> review_content.txt
+              cat "$file" >> review_content.txt
+              echo "" >> review_content.txt
+            fi
+          done
+          
+          echo "Git Diff" >> review_content.txt
+          git diff origin/${{ github.base_ref }}...HEAD >> review_content.txt
           
       - name: Review with Claude
+        if: steps.get-files.outputs.has_changes == 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
-          # Read the diff
-          DIFF=$(cat pr.diff)
+          CONTENT=$(cat review_content.txt)
           
-          # Exit if diff is empty
-          if [ -z "$DIFF" ]; then
-            echo "No changes detected in PR"
-            exit 0
-          fi
-          
-          # Create prompt for Claude with specific instructions
-          PROMPT="You are an expert code reviewer. Carefully analyze this pull request and identify ALL issues, including:
+          PROMPT="You are an expert code reviewer. Find ALL bugs, errors, and issues.
 
-          **Critical Issues to Check:**
-          1. Wrong imports (importing from non-existent modules, incorrect package names, unused imports)
-          2. Syntax errors (missing brackets, incorrect indentation, malformed code)
-          3. Logic errors (incorrect conditions, off-by-one errors, null pointer risks)
-          4. Security vulnerabilities (SQL injection, XSS, hardcoded secrets, insecure dependencies)
-          5. Performance issues (inefficient loops, memory leaks, unnecessary operations)
-          6. Code quality (duplicate code, poor naming, missing error handling)
-          7. Best practices violations (not following language conventions, anti-patterns)
-          8. Type errors (incorrect type usage, missing type annotations where needed)
-          9. Potential runtime errors (division by zero, index out of bounds, undefined variables)
-          10. Breaking changes (API changes that could break existing code)
-
-          **Review Format:**
-          - Start with a severity rating: 🔴 CRITICAL | 🟡 WARNING | 🟢 MINOR
-          - List specific issues with line numbers where possible
-          - Explain WHY each issue is a problem
-          - Suggest concrete fixes
-          - If NO issues found, explicitly state: 'No issues detected - code looks good ✅'
-
-          **Be thorough and critical. Do not approve code with defects.**
-
-          Here is the git diff to review:
+          Check for:
+          1. Syntax errors
+          2. Import errors  
+          3. Runtime errors
+          4. Logic errors
+          5. Security issues
           
-          \`\`\`diff
-          $DIFF
-          \`\`\`"
+          If you find issues, respond with:
+          DEFECTS FOUND
+          List each issue with severity and location.
           
-          # Escape the prompt for JSON
-          PROMPT_ESCAPED=$(echo "$PROMPT" | jq -Rs .)
+          If no issues, respond with:
+          NO ISSUES FOUND
           
-          # Call Claude API
-          echo "Calling Claude API for review..."
+          Code to review:
+          $CONTENT"
+          
+          PROMPT_JSON=$(jq -n --arg p "$PROMPT" '$p')
+          
           RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
             -H "content-type: application/json" \
             -H "x-api-key: $ANTHROPIC_API_KEY" \
             -H "anthropic-version: 2023-06-01" \
             -d '{
               "model": "claude-sonnet-4-20250514",
-              "max_tokens": 8192,
-              "temperature": 0.3,
+              "max_tokens": 8000,
+              "temperature": 0.2,
               "messages": [{
                 "role": "user",
-                "content": '"$PROMPT_ESCAPED"'
+                "content": '"$PROMPT_JSON"'
               }]
             }')
           
-          # Extract the review text
-          REVIEW=$(echo "$RESPONSE" | jq -r '.content[0].text // "Error: Could not get review from Claude"')
+          REVIEW=$(echo "$RESPONSE" | jq -r '.content[0].text')
           
-          # Check if we got an error
-          if echo "$RESPONSE" | jq -e '.error' > /dev/null; then
-            ERROR_MSG=$(echo "$RESPONSE" | jq -r '.error.message')
-            echo "Error from Claude API: $ERROR_MSG"
-            REVIEW="⚠️ **Error calling Claude API:** $ERROR_MSG"
-          fi
+          REVIEW_JSON=$(jq -n --arg r "$REVIEW" '$r')
           
-          # Escape the review for JSON
-          REVIEW_ESCAPED=$(echo "$REVIEW" | jq -Rs .)
+          COMMENT_BODY=$(jq -n --arg r "$REVIEW" '{"body": ("## Claude AI Code Review\n\n" + $r)}')
           
-          # Post review to PR
-          echo "Posting review to PR..."
           curl -s -X POST \
             -H "Authorization: token $GH_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments" \
-            -d '{"body":"## 🤖 Claude AI Code Review\n\n'"$REVIEW"'"}'
+            -d "$COMMENT_BODY"
           
-          echo "Review posted successfully!"
+          echo "Review posted"
