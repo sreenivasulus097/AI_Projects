@@ -12,7 +12,7 @@ flight_tool = {
 }
 
 hotel_tool = {
-    "name": "hotel_finder",
+    "name": "hotel_finder
     "display_name": "Hotel Finder",
     "func": lambda args: str(get_hotels(*args)),
     "description": "Use to find hotels. Input: city, nights, budget",
@@ -33,3 +33,4 @@ attraction_tool = {
 }
 
 tools = [flight_tool, hotel_tool, weather_tool, attraction_tool]
+
