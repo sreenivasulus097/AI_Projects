@@ -7,7 +7,7 @@ import os
 load_dotenv()
 API_KEY = os.getenv("OPENAI_API_KEY")
 
-from agentic_graph import agent
+from agentic_graph import agent1234test 
 user_query = {
     "preferences": {
         "cities": ["Paris", "Rome"],
@@ -42,3 +42,4 @@ output = run_agent(agent, {"context": user_query})
 
 print("----- FINAL ITINERARY -----")
 print(output)
+
