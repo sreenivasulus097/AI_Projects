@@ -21,7 +21,7 @@ import asyncio
 from inspect import isawaitable
 
 
-def run_agent(agent, payload):
+ run_agent(agent, payload):
     # Try common execution APIs in order of likelihood
     if hasattr(agent, "run"):
         return agent.run(payload)
@@ -42,3 +42,4 @@ output = run_agent(agent, {"context": user_query})
 
 print("----- FINAL ITINERARY -----")
 print(output)
+
